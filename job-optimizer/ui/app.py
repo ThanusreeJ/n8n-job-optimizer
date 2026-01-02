@@ -66,53 +66,50 @@ if 'constraint' not in st.session_state:
 # Sidebar for input
 st.sidebar.header("📥 Configuration")
 
+from utils.data_generator import generate_random_jobs, get_demo_machines, get_demo_constraint
+
+# ... imports remain same ...
+
+# Sidebar for input
+st.sidebar.header("📥 Configuration")
+
 # Sample data generator
-if st.sidebar.button("🎲 Generate Sample Data"):
+if st.sidebar.button("🎲 Generate Random Data"):
     
-    # Create sample jobs with TIGHT deadlines (to force tardiness in Baseline)
-    sample_jobs = [
-        # J001: 45m duration, Due 09:15 (Tight!)
-        Job(job_id="J001", product_type="P_A", processing_time=45, due_time=time(9, 15), priority="normal", machine_options=["M1", "M2"]),
-        # J002: RUSH, 40m duration, Due 09:00 (Very Tight!)
-        Job(job_id="J002", product_type="P_A", processing_time=40, due_time=time(9, 0), priority="rush", machine_options=["M1", "M2"]),
-        # J003: 35m duration, Due 09:30
-        Job(job_id="J003", product_type="P_B", processing_time=35, due_time=time(9, 30), priority="normal", machine_options=["M1", "M3"]),
-        # J004: 50m duration, Due 10:00
-        Job(job_id="J004", product_type="P_B", processing_time=50, due_time=time(10, 0), priority="normal", machine_options=["M1", "M3"]),
-        # J005: 30m duration, Due 10:30
-        Job(job_id="J005", product_type="P_C", processing_time=30, due_time=time(10, 30), priority="normal", machine_options=["M2", "M3"]),
-    ]
+    # 1. Generate 5 Random Jobs
+    sample_jobs = generate_random_jobs(5)
     
-    # Create sample machines (setup times belong to Constraint, not Machine)
-    sample_machines = [
-        Machine(machine_id="M1", capabilities=["P_A", "P_B"]),
-        Machine(machine_id="M2", capabilities=["P_A", "P_C"]),
-        Machine(machine_id="M3", capabilities=["P_B", "P_C"]),
-    ]
-    
-    # Create constraint with setup times
-    sample_constraint = Constraint(
-        shift_start=time(8, 0),
-        shift_end=time(16, 0),
-        max_overtime_minutes=30,
-        setup_times={
-            "P_A->P_B": 10, "P_B->P_A": 10,
-            "P_A->P_C": 15, "P_C->P_A": 15,
-            "P_B->P_C": 12, "P_C->P_B": 12
-        }
-    )
+    # 2. Get Standard Demo Machines & Constraints
+    sample_machines = get_demo_machines()
+    sample_constraint = get_demo_constraint()
     
     st.session_state.jobs = sample_jobs
     st.session_state.machines = sample_machines
     st.session_state.constraint = sample_constraint
     
-    st.sidebar.success("✅ Sample data generated successfully!")
-
-# Display current data
+    # Reset results on new data
+    if 'result_baseline' in st.session_state: del st.session_state.result_baseline
+    if 'result_batching' in st.session_state: del st.session_state.result_batching
+    if 'result_final' in st.session_state: del st.session_state.result_final
+    
+    st.sidebar.success(f"✅ Generated {len(sample_jobs)} Random Jobs!")
+    
+    st.sidebar.success(f"✅ Generated {len(sample_jobs)} Random Jobs!")
+    
+# Persistent Data Preview
 if st.session_state.jobs:
-    st.sidebar.markdown("---")
-    st.sidebar.write(f"**Jobs loaded:** {len(st.session_state.jobs)}")
-    st.sidebar.write(f"**Machines:** {len(st.session_state.machines)}")
+    with st.expander("📋 View Generated Input Data", expanded=True):
+        data_preview = []
+        for job in st.session_state.jobs:
+            data_preview.append({
+                "Job ID": job.job_id,
+                "Product": job.product_type,
+                "Processing (min)": job.processing_time,
+                "Due Time": job.due_time.strftime("%H:%M"),
+                "Priority": "⚡ RUSH" if job.priority == 'rush' else "Normal"
+            })
+        st.dataframe(pd.DataFrame(data_preview), use_container_width=True)
+        st.info("💡 Note: Deadlines are TIGHT (09:00-11:00) to challenge the scheduler.")
 
 # Main content area
 st.header("🎯 Optimization Controls")
@@ -133,6 +130,7 @@ with col1:
                 )
                 st.session_state.result_baseline = schedule
                 st.success("✅ Baseline schedule complete!")
+                st.markdown("**Explanation:** Simple FIFO logic. Notice high Tardiness because Rush jobs waited in line.")
 
 with col2:
     if st.button("🔄 Run Batching Optimization (AI)", use_container_width=True):
@@ -146,8 +144,12 @@ with col2:
                     st.session_state.machines,
                     st.session_state.constraint
                 )
+                # CRITICAL: Calculate KPIs so the Comparison Table doesn't crash
+                schedule.calculate_kpis(st.session_state.machines, st.session_state.constraint)
+                
                 st.session_state.result_batching = schedule
                 st.success("✅ AI Batching complete!")
+                st.markdown("**Explanation:** AI grouped jobs by Product Type. Setup Time dropped, but load might be unbalanced.")
 
 with col3:
     if st.button("⚖️ Run Load Balancing (AI)", use_container_width=True):
@@ -164,13 +166,35 @@ with col3:
                     st.session_state.constraint,
                     st.session_state.jobs
                 )
+                # CRITICAL: Calculate KPIs
+                schedule.calculate_kpis(st.session_state.machines, st.session_state.constraint)
+                
                 st.session_state.result_final = schedule
                 st.success("✅ Workload balancing complete!")
+                st.markdown("**Explanation:** Jobs moved from busy machines to free ones. Optimization Achieved!")
 
 # Results display
 st.header("📈 Results Dashboard")
 
+# COMPARISON MATRIX (New Section)
+if 'result_baseline' in st.session_state and 'result_final' in st.session_state:
+    st.subheader("⚖️ Strategy Comparison")
+    
+    base_kpi = st.session_state.result_baseline.kpis
+    batch_kpi = st.session_state.result_batching.kpis
+    final_kpi = st.session_state.result_final.kpis
+    
+    comp_data = {
+        "Metric": ["Total Tardiness (min)", "Setup Time (min)", "Load Imbalance (%)"],
+        "Baseline (FIFO)": [base_kpi.total_tardiness, base_kpi.total_setup_time, f"{base_kpi.utilization_imbalance:.1f}"],
+        "Batching (AI)": [batch_kpi.total_tardiness, batch_kpi.total_setup_time, f"{batch_kpi.utilization_imbalance:.1f}"],
+        "Bottleneck (AI)": [final_kpi.total_tardiness, final_kpi.total_setup_time, f"{final_kpi.utilization_imbalance:.1f}"],
+    }
+    st.table(pd.DataFrame(comp_data))
+
+# ... (Detailed Results Logic) ...
 if 'result_final' in st.session_state:
+    # ... (Show Final Schedule Table) ...
     st.subheader("✅ Final Optimized Schedule")
     st.markdown("**Status:** Fully Optimized (Batching + Load Balancing Applied)")
     
